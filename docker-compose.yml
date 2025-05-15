@@ -1,0 +1,55 @@
+services:
+  agent:
+    build: ./agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    depends_on:
+      - llm
+      # - retriever
+
+  llm:
+    image: ollama/ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NVIDIA_DISABLE_REQUIRE=1
+
+  # retriever:
+  #   build: ./retriever
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./vault:/app/vault
+
+  # display:
+  #   build: ./display
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5001:5001"
+
+  # printer:
+  #   build: ./printer
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5002:5002"
+
+  # voice:
+  #   build: ./voice
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5003:5003"
+  #   volumes:
+  #     - ./voice/voices:/app/voices
+
+volumes:
+  ollama:

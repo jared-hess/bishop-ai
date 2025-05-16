@@ -1,55 +1,95 @@
 import os
+import json
 import logging
 import requests
+
 from fastapi import FastAPI
-from langserve import add_routes
-from langchain_core.runnables import RunnableLambda
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-# from langchain_ollama import ChatOllama
-from langchain_community.chat_models import ChatOllama
+from langchain_ollama import ChatOllama
 
-# Setup logging
+# ——— Logging setup ————————————————————————————————————————————————————————
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
-logger = logging.getLogger("bishop-agent")
+logger = logging.getLogger("chatbot-proxy")
 
-# Env config
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://llm:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "mistral")
+# ——— Configuration ——————————————————————————————————————————————————————
+OLLAMA_URL    = os.getenv("OLLAMA_URL", "http://llm:11434")
+DEFAULT_MODEL = os.getenv("LLM_MODEL", "mistral")
 
-# Optional: preload model on startup
+# ——— Preload model on startup —————————————————————————————————————————————
 def preload_model():
     try:
-        logger.info(f"Preloading model '{LLM_MODEL}' from Ollama...")
-        response = requests.post(f"{OLLAMA_URL}/api/pull", json={"name": LLM_MODEL}, stream=True)
-        response.raise_for_status()
-        for line in response.iter_lines():
-            decoded = line.decode(errors="ignore")
-            if "success" in decoded:
-                logger.info(f"Model '{LLM_MODEL}' pulled successfully.")
+        logger.info(f"[startup] Pulling model '{DEFAULT_MODEL}' from Ollama…")
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/pull",
+            json={"name": DEFAULT_MODEL},
+            stream=True,
+            timeout=300,
+        )
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            text = line.decode(errors="ignore")
+            if "success" in text:
+                logger.info(f"[startup] Model '{DEFAULT_MODEL}' ready.")
                 break
-            logger.debug(decoded)
+            logger.debug(f"[startup] {text}")
     except Exception as e:
-        logger.error(f"Model preload failed: {e}")
-        
-app = FastAPI(title="Bishop")
+        logger.error(f"[startup] Model preload failed: {e}")
 
-class Input(BaseModel):
-    input: str
+# ——— LLM client ————————————————————————————————————————————————————————
+llm = ChatOllama(model=DEFAULT_MODEL, base_url=OLLAMA_URL)
 
-class Output(BaseModel):
-    output: str
+# ——— Pydantic request schemas —————————————————————————————————————————————
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 
-llm = ChatOllama(model=LLM_MODEL, base_url=OLLAMA_URL)
+class ChatCompletionRequest(BaseModel):
+    model: str | None = None
+    messages: list[ChatMessage]
+    stream: bool = True
 
-chain = RunnableLambda(lambda inputs: {
-    "output": llm.invoke(inputs["input"]).content  # extract the string
-})
-# chain = chain.with_types(input_type=Input, output_type=Output)
+# ——— FastAPI app ————————————————————————————————————————————————————————
+app = FastAPI(title="Bishop Chatbot-UI Proxy")
 
-add_routes(app, chain, path="/")
-
-
-# Preload model on app start
 @app.on_event("startup")
-def startup_event():
+def on_startup():
     preload_model()
+
+@app.get("/v1/models")
+async def list_models():
+    return {
+        "object": "list",
+        "data": [
+            {"id": DEFAULT_MODEL, "object": "model"}
+        ],
+    }
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest):
+    model = request.model or DEFAULT_MODEL
+    user_msg = request.messages[-1].content
+
+    if request.stream:
+        def event_stream():
+            try:
+                reply = llm.invoke(user_msg).content
+                chunk = {"choices":[{"delta":{"content":reply}}]}
+                yield f"data: {json.dumps(chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                logger.error("LLM stream error: %s", e)
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+    else:
+        try:
+            reply = llm.invoke(user_msg).content
+        except Exception as e:
+            logger.error("LLM error: %s", e)
+            raise
+        return JSONResponse({
+            "choices": [{
+                "message": {"role": "assistant", "content": reply},
+                "finish_reason": "stop","index": 0,
+            }],
+            "usage": {},
+        })

@@ -145,28 +145,44 @@ async def chat_completions(req: ChatCompletionRequest):
 
     # ── STREAMING mode ────────────────────────────────────────
     if req.stream:
-        def sse_stream() -> Generator[str, None, None]:
-            for chunk in llm.stream(lc_msgs, model=model_name):
-                # chunk is ChatGenerationChunk → chunk.message.content / .text
-                delta_text = getattr(chunk, "content", "") or chunk.text
-                if delta_text:
+        completion_id = str(uuid.uuid4())
+        created       = int(time.time())
+
+        def sse_stream():
+            try:
+                for chunk in llm.stream(lc_msgs, model=model_name):
+                    # chunk may be AIMessageChunk (content) or ChatGenerationChunk (text)
+                    delta = getattr(chunk, "content", None) or getattr(chunk, "text", "")
+                    if not delta:
+                        continue
                     data = {
-                        "id": completion_id,
-                        "object": "chat.completion.chunk",
+                        "id":      completion_id,
+                        "object":  "chat.completion.chunk",
                         "created": created,
-                        "model": model_name,
+                        "model":   model_name,
                         "choices": [{
-                            "delta": {"content": delta_text},
+                            "delta": { "content": delta },
                             "index": 0,
                             "finish_reason": None
                         }]
                     }
+                    # each SSE frame must end with *two* \n
                     yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-            # end‐of‐stream marker
-            yield "data: [DONE]\n\n"
+            finally:
+                # Always terminate stream so Chatbot-UI knows we're done
+                yield "data: [DONE]\n\n"
 
-        return StreamingResponse(sse_stream(), media_type="text/event-stream")
-
+        # Disable proxy buffering & assure correct MIME
+        return StreamingResponse(
+            sse_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control":       "no-cache",
+                "X-Accel-Buffering":   "no",
+                "Connection":          "keep-alive",
+            },
+        )
+    
     # ── NON-STREAMING mode ────────────────────────────────────
     result = llm.invoke(lc_msgs, model=model_name)  # returns AIMessage
     answer = result.content if hasattr(result, "content") else str(result)

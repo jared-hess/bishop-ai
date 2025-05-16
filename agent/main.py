@@ -1,50 +1,55 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
 import os
-import requests
 import logging
+import requests
+from fastapi import FastAPI
+from langserve import add_routes
+from langchain_core.runnables import RunnableLambda
+from pydantic import BaseModel
+# from langchain_ollama import ChatOllama
+from langchain_community.chat_models import ChatOllama
 
-app = FastAPI()
-
-logging.basicConfig(level=logging.INFO)
+# Setup logging
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 logger = logging.getLogger("bishop-agent")
 
+# Env config
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://llm:11434")
-MODEL = os.getenv("LLM_MODEL", "mistral")
+LLM_MODEL = os.getenv("LLM_MODEL", "mistral")
 
-class AskRequest(BaseModel):
-    query: str
-
-@app.on_event("startup")
+# Optional: preload model on startup
 def preload_model():
-    logger.info(f"Preloading model '{MODEL}' from Ollama...")
     try:
-        response = requests.post(f"{OLLAMA_URL}/api/pull", json={"name": MODEL}, stream=True)
+        logger.info(f"Preloading model '{LLM_MODEL}' from Ollama...")
+        response = requests.post(f"{OLLAMA_URL}/api/pull", json={"name": LLM_MODEL}, stream=True)
         response.raise_for_status()
         for line in response.iter_lines():
             decoded = line.decode(errors="ignore")
             if "success" in decoded:
-                logger.info(f"Model '{MODEL}' pulled successfully.")
+                logger.info(f"Model '{LLM_MODEL}' pulled successfully.")
                 break
             logger.debug(decoded)
-    except requests.RequestException as e:
-        logger.error(f"Failed to preload model '{MODEL}': {e}")
+    except Exception as e:
+        logger.error(f"Model preload failed: {e}")
+        
+app = FastAPI(title="Bishop")
 
-@app.post("/ask")
-def ask(request: AskRequest):
-    logger.info(f"Received query: {request.query}")
-    try:
-        response = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={"model": MODEL, "prompt": request.query, "stream": False},
-        )
-        logger.debug(f"Ollama response status: {response.status_code}")
-        logger.debug(f"Ollama response body: {response.text}")
-        response.raise_for_status()
-        result = response.json()
-        answer = result.get("response", "[No response received]")
-        logger.info("Successfully generated response from LLM.")
-        return {"answer": answer}
-    except requests.RequestException as e:
-        logger.error(f"Failed to query Ollama: {e}")
-        return {"error": "Failed to generate response from LLM."}
+class Input(BaseModel):
+    input: str
+
+class Output(BaseModel):
+    output: str
+
+llm = ChatOllama(model=LLM_MODEL, base_url=OLLAMA_URL)
+
+chain = RunnableLambda(lambda inputs: {
+    "output": llm.invoke(inputs["input"]).content  # extract the string
+})
+# chain = chain.with_types(input_type=Input, output_type=Output)
+
+add_routes(app, chain, path="/")
+
+
+# Preload model on app start
+@app.on_event("startup")
+def startup_event():
+    preload_model()

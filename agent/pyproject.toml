@@ -6,10 +6,15 @@ authors = ["Jared Hess <hessjar@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-fastapi = "^0.110.0"
 uvicorn = "^0.29.0"
 requests = "^2.31.0"
 python-dotenv = "^1.0.1"
+langchain = "^0.3.25"
+langserve = "^0.3.1"
+langchain-community = "^0.3.24"
+sse-starlette = "^2.3.5"
+fastapi = "^0.115.12"
+langchain-ollama = "^0.3.2"
 
 [build-system]
 requires = ["poetry-core"]

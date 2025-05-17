@@ -152,7 +152,11 @@ async def chat_completions(req: ChatCompletionRequest):
             try:
                 for chunk in llm.stream(lc_msgs, model=model_name):
                     # chunk may be AIMessageChunk (content) or ChatGenerationChunk (text)
-                    delta = getattr(chunk, "content", None) or getattr(chunk, "text", "")
+                    if hasattr(chunk, "content"):
+                        delta = chunk.content
+                    else:
+                        txt = getattr(chunk, "text", "")
+                        delta = txt() if callable(txt) else txt
                     if not delta:
                         continue
                     data = {

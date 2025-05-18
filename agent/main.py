@@ -18,7 +18,7 @@ import logging
 from typing import List, Dict, Generator
 
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -131,13 +131,29 @@ async def list_models():
 
 # ── POST /v1/chat/completions ─────────────────────────────────
 @app.post("/v1/chat/completions")
-async def chat_completions(req: ChatCompletionRequest):
+async def chat_completions(req: ChatCompletionRequest, request: Request) -> Response:
     """
     OpenAI-compatible endpoint:
       • streams Server-Sent Events if req.stream=True
       • otherwise returns one-shot JSON
     Full context is forwarded every call.
     """
+    
+    # ── RAW DEBUG LOGGING ─────────────────────────────────────
+    logger.debug("⬇️  Incoming headers:")
+    for k, v in request.headers.items():
+        logger.debug(f"  {k}: {v}")
+
+    try:
+        raw = await request.body()
+        body_text = raw.decode("utf-8")
+        body_json = json.loads(body_text)
+        logger.debug("⬇️  Incoming JSON body:\n%s", json.dumps(body_json, indent=2))
+    except Exception as e:
+        logger.warning("⚠️  Couldn't parse raw body: %s", e)
+
+
+
     lc_msgs = to_lc_messages(req.messages)
     model_name = resolve_model(req.model)
     created = int(time.time())
